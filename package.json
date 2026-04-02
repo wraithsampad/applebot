@@ -1,0 +1,23 @@
+{
+  "name": "apple-account-bot",
+  "version": "1.0.0",
+  "description": "Bot for creating Apple accounts with anti-detection measures",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "apple",
+    "account",
+    "automation",
+    "anti-detection",
+    "browser",
+    "fingerprinting"
+  ],
+  "author": "Nayeem",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "^21.0.0"
+  }
+}
