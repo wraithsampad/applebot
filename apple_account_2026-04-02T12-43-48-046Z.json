@@ -1,4 +1,0 @@
-{
-  "status": "failed",
-  "error": "Waiting for selector `#firstName, #lastName, #birthday-month, input[name=\"email\"]` failed: Waiting failed: 15000ms exceeded"
-}

@@ -2,17 +2,6 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
-// Read emails from text/email.text
-function getEmails() {
-    const filePath = path.join(__dirname, '..', 'text', 'email.text');
-    const content = fs.readFileSync(filePath, 'utf8');
-    return content
-        .replace(/[{}]/g, '')
-        .split(',')
-        .map(e => e.trim().replace(/^["']|["']$/g, ''))
-        .filter(e => e.length > 0);
-}
-
 // Read password from text/password.text
 function getPassword() {
     const filePath = path.join(__dirname, '..', 'text', 'password.text');
@@ -28,6 +17,19 @@ function getPhoneNumbers() {
         .split(',')
         .map(e => e.trim().replace(/^["']|["']$/g, ''))
         .filter(e => e.length > 0);
+}
+
+// Remove a phone number from text/number.text
+function removePhoneNumber(phoneNumber) {
+    const filePath = path.join(__dirname, '..', 'text', 'number.text');
+    const content = fs.readFileSync(filePath, 'utf8');
+    const numbers = content
+        .replace(/[{}]/g, '')
+        .split(',')
+        .map(e => e.trim().replace(/^["']|["']$/g, ''))
+        .filter(e => e.length > 0 && e !== phoneNumber);
+    fs.writeFileSync(filePath, '{\n' + numbers.map(n => `"${n}"`).join(',\n') + '\n}', 'utf8');
+    console.log(`Removed phone number ${phoneNumber} from number.text. ${numbers.length} remaining.`);
 }
 
 // Country calling code to ISO code mapping for phone dropdown
@@ -288,14 +290,7 @@ async function fillFormFields(pageOrFrame, browserPage) {
         console.log('Failed to select year:', e.message);
     }
 
-    // Fill Email
-    const emails = getEmails();
-    const email = emails[0];
-    if (email) {
-        await safeFill('appleId', email, 'Email');
-    } else {
-        console.log('No emails found in text/email.text');
-    }
+    // Email - user enters manually
 
     // Fill Password
     const password = getPassword();
@@ -309,6 +304,7 @@ async function fillFormFields(pageOrFrame, browserPage) {
     const phoneNumber = phoneNumbers[0];
     console.log(`Using phone number: ${phoneNumber}`);
     if (phoneNumber) {
+        removePhoneNumber(phoneNumber);
         const countryInfo = getCountryFromPhone(phoneNumber);
         console.log(`Country info: ${JSON.stringify(countryInfo)}`);
         if (countryInfo) {
@@ -394,7 +390,7 @@ async function fillFormFields(pageOrFrame, browserPage) {
         output: process.stdout
     });
 
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
         rl.question('Press Enter to continue to next page...', async () => {
             rl.close();
 
@@ -451,39 +447,55 @@ async function fillFormFields(pageOrFrame, browserPage) {
                             console.log('Could not get page content:', e.message);
                         }
 
-                        // Wait for "Didn't get a code?" button in the new iframe content
-                        let clicked = false;
-                        for (let attempt = 0; attempt < 30 && !clicked; attempt++) {
-                            try {
-                                // Use querySelectorAll with evaluate to find button by text (handles curly apostrophe)
-                                clicked = await newFrame.evaluate(() => {
-                                    const buttons = document.querySelectorAll('button');
-                                    for (const btn of buttons) {
-                                        const text = btn.textContent || '';
-                                        if (text.includes("Didn") && text.includes("get a code")) {
-                                            btn.click();
-                                            return true;
-                                        }
-                                    }
-                                    return false;
-                                });
-                                if (clicked) {
-                                    console.log('Clicked "Didn\'t get a code?" button');
-                                }
-                            } catch (frameErr) {
-                                // iframe may still be loading
-                            }
-                            if (!clicked) await new Promise(r => setTimeout(r, 1000));
-                        }
-                        if (!clicked) console.log('Could not find "Didn\'t get a code?" button');
+                        // Loop through phone numbers
+                        const allPhoneNumbers = getPhoneNumbers();
+                        console.log(`Found ${allPhoneNumbers.length} phone numbers to try`);
 
-                        // Now click "Use a Different Number" button
-                        if (clicked) {
+                        for (let phoneIndex = 0; phoneIndex < allPhoneNumbers.length; phoneIndex++) {
+                            console.log(`\n--- Phone number cycle ${phoneIndex + 1}/${allPhoneNumbers.length} ---`);
+
+                            // Re-get iframe reference each cycle (page may have navigated)
+                            const iframeEl2 = await mainPage.$('#aid-create-widget-iFrame');
+                            if (!iframeEl2) {
+                                console.log('Iframe element not found');
+                                break;
+                            }
+                            const cycleFrame = await iframeEl2.contentFrame();
+                            if (!cycleFrame) {
+                                console.log('Could not get iframe content frame');
+                                break;
+                            }
+
+                            // Step 1: Click "Didn't get a code?"
+                            let clicked = false;
+                            for (let attempt = 0; attempt < 30 && !clicked; attempt++) {
+                                try {
+                                    clicked = await cycleFrame.evaluate(() => {
+                                        const buttons = document.querySelectorAll('button');
+                                        for (const btn of buttons) {
+                                            const text = btn.textContent || '';
+                                            if (text.includes("Didn") && text.includes("get a code")) {
+                                                btn.click();
+                                                return true;
+                                            }
+                                        }
+                                        return false;
+                                    });
+                                    if (clicked) console.log('Clicked "Didn\'t get a code?" button');
+                                } catch (frameErr) { }
+                                if (!clicked) await new Promise(r => setTimeout(r, 1000));
+                            }
+                            if (!clicked) {
+                                console.log('Could not find "Didn\'t get a code?" button');
+                                break;
+                            }
+
+                            // Step 2: Click "Use a Different Number"
                             await new Promise(r => setTimeout(r, 2000));
                             let clickedDifferent = false;
                             for (let attempt = 0; attempt < 30 && !clickedDifferent; attempt++) {
                                 try {
-                                    clickedDifferent = await newFrame.evaluate(() => {
+                                    clickedDifferent = await cycleFrame.evaluate(() => {
                                         const buttons = document.querySelectorAll('button');
                                         for (const btn of buttons) {
                                             const text = btn.textContent || '';
@@ -494,19 +506,114 @@ async function fillFormFields(pageOrFrame, browserPage) {
                                         }
                                         return false;
                                     });
-                                    if (clickedDifferent) {
-                                        console.log('Clicked "Use a Different Number" button');
-                                    }
-                                } catch (frameErr) {
-                                    // iframe may still be loading
-                                }
+                                    if (clickedDifferent) console.log('Clicked "Use a Different Number" button');
+                                } catch (frameErr) { }
                                 if (!clickedDifferent) await new Promise(r => setTimeout(r, 1000));
                             }
-                            if (!clickedDifferent) console.log('Could not find "Use a Different Number" button');
+                            if (!clickedDifferent) {
+                                console.log('Could not find "Use a Different Number" button');
+                                break;
+                            }
+
+                            // Step 3: Fill phone number
+                            await new Promise(r => setTimeout(r, 3000));
+                            const newPhoneNumber = allPhoneNumbers[phoneIndex];
+                            console.log(`Using phone number: ${newPhoneNumber}`);
+                            removePhoneNumber(newPhoneNumber);
+
+                            let newPhoneDigits = newPhoneNumber;
+                            const sortedCodesNew = Object.keys(phoneCodeMap).sort((a, b) => b.length - a.length);
+                            for (const code of sortedCodesNew) {
+                                if (newPhoneNumber.startsWith(code)) {
+                                    newPhoneDigits = newPhoneNumber.substring(code.length);
+                                    break;
+                                }
+                            }
+
+                            // Re-get iframe again after page change
+                            const iframeEl3 = await mainPage.$('#aid-create-widget-iFrame');
+                            const fillFrame = await iframeEl3.contentFrame();
+
+                            let phoneFilled = false;
+                            for (let attempt = 0; attempt < 15 && !phoneFilled; attempt++) {
+                                try {
+                                    phoneFilled = await fillInput(fillFrame, 'phoneNumber', newPhoneDigits);
+                                    if (phoneFilled) console.log(`Filled phone number: ${newPhoneDigits}`);
+                                } catch (e) {
+                                    console.log(`Attempt ${attempt + 1}: waiting for phone input...`);
+                                }
+                                if (!phoneFilled) await new Promise(r => setTimeout(r, 1000));
+                            }
+
+                            // Step 4: Click Continue
+                            if (phoneFilled) {
+                                await new Promise(r => setTimeout(r, 1000));
+                                let continueClicked = false;
+                                for (let attempt = 0; attempt < 15 && !continueClicked; attempt++) {
+                                    try {
+                                        continueClicked = await fillFrame.evaluate(() => {
+                                            const btn = document.querySelector('button[type="submit"][form="updatePhone"]');
+                                            if (btn) {
+                                                btn.click();
+                                                return true;
+                                            }
+                                            const buttons = document.querySelectorAll('button[type="submit"]');
+                                            for (const b of buttons) {
+                                                if (b.textContent.trim() === 'Continue') {
+                                                    b.click();
+                                                    return true;
+                                                }
+                                            }
+                                            return false;
+                                        });
+                                        if (continueClicked) console.log('Clicked Continue button');
+                                    } catch (e) { }
+                                    if (!continueClicked) await new Promise(r => setTimeout(r, 1000));
+                                }
+                                if (!continueClicked) {
+                                    console.log('Could not find Continue button');
+                                    break;
+                                }
+
+                                // Wait and check for error message
+                                await new Promise(r => setTimeout(r, 5000));
+                                const iframeEl4 = await mainPage.$('#aid-create-widget-iFrame');
+                                const checkFrame = await iframeEl4.contentFrame();
+                                
+                                const hasError = await checkFrame.evaluate(() => {
+                                    const allText = document.body.innerText || '';
+                                    if (allText.includes("Verification codes can") && allText.includes("sent to this phone number")) {
+                                        return true;
+                                    }
+                                    const redTexts = document.querySelectorAll('.text-color-glyph-red');
+                                    for (const el of redTexts) {
+                                        if (el.textContent.includes("Verification codes can")) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                });
+
+                                if (hasError) {
+                                    console.log('Error: Verification codes cannot be sent to this phone number. Restarting entire process...');
+                                    throw new Error('RESTART_REQUIRED');
+                                }
+                            } else {
+                                console.log('Could not fill phone number');
+                                break;
+                            }
+
+                            // Wait before next cycle
+                            await new Promise(r => setTimeout(r, 3000));
                         }
+                        console.log('\nAll phone numbers processed.');
                     }
                 }
             } catch (e) {
+                if (e.message === 'RESTART_REQUIRED') {
+                    reject(e);
+                    return;
+                }
                 console.log('Error:', e.message);
             }
 
@@ -517,64 +624,89 @@ async function fillFormFields(pageOrFrame, browserPage) {
 }
 
 async function createAppleBot(options = {}) {
-    const browser = await puppeteer.launch({
-        headless: options.headless !== undefined ? options.headless : false,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--ignore-certificate-errors',
-            '--disable-blink-features=AutomationControlled'
-        ],
-        defaultViewport: {
-            width: options.width || 1366,
-            height: options.height || 768,
-            deviceScaleFactor: 1,
+    const maxRestarts = 10;
+    let restartCount = 0;
+
+    while (restartCount < maxRestarts) {
+        let browser = null;
+        try {
+            console.log(`\n=== Starting attempt ${restartCount + 1}/${maxRestarts} ===\n`);
+
+            browser = await puppeteer.launch({
+                headless: options.headless !== undefined ? options.headless : false,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu',
+                    '--ignore-certificate-errors',
+                    '--disable-blink-features=AutomationControlled'
+                ],
+                defaultViewport: {
+                    width: options.width || 1366,
+                    height: options.height || 768,
+                    deviceScaleFactor: 1,
+                }
+            });
+
+            const page = await browser.newPage();
+
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                delete navigator.__proto__.webdriver;
+
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) =>
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters);
+
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+            });
+
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+            page.on('dialog', async (dialog) => {
+                console.log(`Dialog: ${dialog.message()}`);
+                await dialog.dismiss();
+            });
+
+            await fillAppleIdForm(page);
+
+            console.log('Bot is running. Press Ctrl+C to stop.');
+            await new Promise(() => {});
+        } catch (error) {
+            if (error.message === 'RESTART_REQUIRED') {
+                restartCount++;
+                console.log(`\n=== Restarting process (attempt ${restartCount}/${maxRestarts}) ===\n`);
+                if (browser) {
+                    await browser.close();
+                    console.log('Browser closed. Waiting 5 seconds before restart...');
+                    await new Promise(r => setTimeout(r, 5000));
+                }
+                continue;
+            }
+            console.error(`Error: ${error.message}`);
         }
-    });
 
-    const page = await browser.newPage();
-
-    await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        delete navigator.__proto__.webdriver;
-
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) =>
-            parameters.name === 'notifications'
-                ? Promise.resolve({ state: Notification.permission })
-                : originalQuery(parameters);
-
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-        });
-    });
-
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-    page.on('dialog', async (dialog) => {
-        console.log(`Dialog: ${dialog.message()}`);
-        await dialog.dismiss();
-    });
-
-    try {
-        await fillAppleIdForm(page);
-
-        console.log('Bot is running. Press Ctrl+C to stop.');
-        await new Promise(() => {});
-    } catch (error) {
-        console.error(`Error: ${error.message}`);
+        if (browser) {
+            await browser.close();
+        }
+        break;
     }
 
-    await browser.close();
+    if (restartCount >= maxRestarts) {
+        console.log('Max restarts reached. Stopping.');
+    }
 }
 
 module.exports = { createAppleBot, fillAppleIdForm };

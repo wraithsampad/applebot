@@ -6,6 +6,7 @@ class ChromeManager {
     this.options = options;
     this.browser = null;
     this.page = null;
+    this.fingerprint = null;
   }
 
   // Clear all browser data including cache, history, cookies, etc.
@@ -435,13 +436,18 @@ class ChromeManager {
   // Launch Chrome with specified options
   async launch() {
     console.log("Launching Chrome with anti-detection measures...");
-    
-    // Get a random fingerprint
-    const fingerprint = getRandomFingerprint();
-    
+
+    // Get a fresh random fingerprint every time
+    this.fingerprint = getRandomFingerprint();
+    const fingerprint = this.fingerprint;
+
+    const headless = this.options.headless !== undefined ? this.options.headless : false;
+    const width = this.options.width || 1366;
+    const height = this.options.height || 768;
+
     // Launch browser with anti-detection arguments
     this.browser = await puppeteer.launch({
-      headless: false, // Keep visible to monitor progress
+      headless: headless,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage',
