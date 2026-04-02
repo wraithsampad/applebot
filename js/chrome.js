@@ -478,7 +478,12 @@ class ChromeManager {
       ],
       ignoreDefaultArgs: [
         '--enable-automation'
-      ]
+      ],
+      defaultViewport: {
+        width: width,
+        height: height,
+        deviceScaleFactor: 1
+      }
     });
     
     this.page = await this.browser.newPage();
@@ -503,8 +508,28 @@ class ChromeManager {
   async close() {
     if (this.browser) {
       await this.browser.close();
+      this.browser = null;
+      this.page = null;
       console.log("Browser closed");
     }
+  }
+
+  // Close and relaunch with a fresh fingerprint and cleared data
+  async restart() {
+    console.log("Restarting Chrome with new fingerprint...");
+    await this.close();
+    await new Promise(r => setTimeout(r, 2000));
+    return await this.launch();
+  }
+
+  // Get the browser instance
+  getBrowser() {
+    return this.browser;
+  }
+
+  // Get the current fingerprint
+  getFingerprint() {
+    return this.fingerprint;
   }
 }
 

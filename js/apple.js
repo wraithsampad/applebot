@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer');
+const ChromeManager = require('./chrome');
 const fs = require('fs');
 const path = require('path');
 
@@ -626,61 +626,39 @@ async function fillFormFields(pageOrFrame, browserPage) {
 async function createAppleBot(options = {}) {
     const maxRestarts = 10;
     let restartCount = 0;
+    let chromeManager = null;
 
     while (restartCount < maxRestarts) {
-        let browser = null;
         try {
             console.log(`\n=== Starting attempt ${restartCount + 1}/${maxRestarts} ===\n`);
 
-            browser = await puppeteer.launch({
-                headless: options.headless !== undefined ? options.headless : false,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu',
-                    '--ignore-certificate-errors',
-                    '--disable-blink-features=AutomationControlled'
-                ],
-                defaultViewport: {
+            if (!chromeManager) {
+                chromeManager = new ChromeManager({
+                    headless: options.headless !== undefined ? options.headless : false,
                     width: options.width || 1366,
-                    height: options.height || 768,
-                    deviceScaleFactor: 1,
-                }
-            });
+                    height: options.height || 768
+                });
+                const page = await chromeManager.launch();
+                console.log("Fingerprint applied:", chromeManager.getFingerprint().userAgent);
 
-            const page = await browser.newPage();
-
-            await page.evaluateOnNewDocument(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                delete navigator.__proto__.webdriver;
-
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) =>
-                    parameters.name === 'notifications'
-                        ? Promise.resolve({ state: Notification.permission })
-                        : originalQuery(parameters);
-
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
+                page.on('dialog', async (dialog) => {
+                    console.log(`Dialog: ${dialog.message()}`);
+                    await dialog.dismiss();
                 });
 
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
+                await fillAppleIdForm(page);
+            } else {
+                // Restart: close old browser, clear all data, apply new fingerprint
+                const page = await chromeManager.restart();
+                console.log("New fingerprint applied:", chromeManager.getFingerprint().userAgent);
+
+                page.on('dialog', async (dialog) => {
+                    console.log(`Dialog: ${dialog.message()}`);
+                    await dialog.dismiss();
                 });
-            });
 
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-            page.on('dialog', async (dialog) => {
-                console.log(`Dialog: ${dialog.message()}`);
-                await dialog.dismiss();
-            });
-
-            await fillAppleIdForm(page);
+                await fillAppleIdForm(page);
+            }
 
             console.log('Bot is running. Press Ctrl+C to stop.');
             await new Promise(() => {});
@@ -688,20 +666,17 @@ async function createAppleBot(options = {}) {
             if (error.message === 'RESTART_REQUIRED') {
                 restartCount++;
                 console.log(`\n=== Restarting process (attempt ${restartCount}/${maxRestarts}) ===\n`);
-                if (browser) {
-                    await browser.close();
-                    console.log('Browser closed. Waiting 5 seconds before restart...');
-                    await new Promise(r => setTimeout(r, 5000));
-                }
+                console.log('All data will be cleared and a new fingerprint will be applied...');
                 continue;
             }
             console.error(`Error: ${error.message}`);
         }
 
-        if (browser) {
-            await browser.close();
-        }
         break;
+    }
+
+    if (chromeManager) {
+        await chromeManager.close();
     }
 
     if (restartCount >= maxRestarts) {
